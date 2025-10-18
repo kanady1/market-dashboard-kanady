@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>لوحة السوق المتقدمة — بدون API مفاتيح</title>
+<link rel="preconnect" href="https://unpkg.com">
+<style>
+  :root{
+    --bg:#0f141a; --card:#151b23; --text:#e6edf3; --muted:#9aa4b2;
+    --up:#22c55e; --down:#ef4444; --accent:#60a5fa; --grid:#223042;
+  }
+  :root.light{
+    --bg:#f6f7fb; --card:#ffffff; --text:#0f1720; --muted:#5f6b7a;
+    --up:#059669; --down:#dc2626; --accent:#2563eb; --grid:#e5e7eb;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial}
+  header{
+    position:sticky;top:0;z-index:10;background:linear-gradient(180deg,var(--bg),rgba(0,0,0,0));
+    padding:14px 16px 8px;border-bottom:1px solid var(--grid)
+  }
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  .title{font-weight:700;font-size:18px;margin-inline-end:auto}
+  .btn{background:var(--card);color:var(--text);border:1px solid var(--grid);padding:8px 10px;border-radius:10px;cursor:pointer}
+  .btn:hover{outline:2px solid rgba(96,165,250,.25)}
+  input,select{background:var(--card);color:var(--text);border:1px solid var(--grid);padding:8px 10px;border-radius:10px;outline:none}
+  .grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px;padding:14px}
+  .panel{grid-column:span 12;background:var(--card);border:1px solid var(--grid);border-radius:14px;overflow:hidden}
+  @media(min-width:1100px){ .panel{grid-column:span 12} }
+  .panel-head{display:flex;gap:8px;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid var(--grid)}
+  .pair{display:flex;gap:8px;align-items:center}
+  .status{display:flex;gap:10px;align-items:center;color:var(--muted);font-size:12px}
+  .chip{padding:3px 8px;border-radius:999px;border:1px solid var(--grid);background:transparent}
+  .chip.up{color:var(--up);border-color:var(--up)}
+  .chip.down{color:var(--down);border-color:var(--down)}
+  .wrap{display:grid;grid-template-columns:1fr;gap:10px;padding:12px}
+  .chart{height:360px}
+  .subchart{height:120px}
+  .legend{display:flex;gap:10px;flex-wrap:wrap;color:var(--muted);font-size:12px}
+  .badge{border:1px solid var(--grid);padding:4px 8px;border-radius:8px}
+  .fav{cursor:pointer;font-size:18px;user-select:none}
+  .fav.active{color:#fbbf24}
+  .tbl{width:100%;border-collapse:collapse;margin-top:8px}
+  .tbl th,.tbl td{border-bottom:1px solid var(--grid);padding:8px;text-align:center;font-size:13px}
+  .greed{width:120px;height:120px;border-radius:50%;display:grid;place-items:center;border:8px solid var(--grid);position:relative}
+  .needle{position:absolute;width:2px;height:48px;background:var(--accent);bottom:50%;left:50%;transform-origin:bottom}
+  .muted{color:var(--muted)}
+</style>
+</head>
+<body>
+
+<header class="row">
+  <div class="title">لوحة السوق المتقدمة</div>
+  <input id="search" placeholder="ابحث عن الزوج (مثال: BTCUSDT)"/>
+  <select id="pairPicker" multiple size="4" title="اختر أزواج (Ctrl/⌘ للتعدد)"></select>
+  <button class="btn" id="applyPairs">+ إضافة أزواج</button>
+  <button class="btn" id="toggleTheme">وضع فاتح / داكن</button>
+</header>
+
+<section class="grid" id="boards"></section>
+
+<!-- مكتبات الواجهة -->
+<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+
+<script>
+/** ========================
+ * إعداد عام
+ =========================*/
+const $ = s => document.querySelector(s);
+const boards = $("#boards");
+const picker = $("#pairPicker");
+const search = $("#search");
+const applyPairsBtn = $("#applyPairs");
+const toggleThemeBtn = $("#toggleTheme");
+const DARK = localStorage.getItem("theme") ?? "dark";
+if (DARK === "light") document.documentElement.classList.add("light");
+
+toggleThemeBtn.onclick = () => {
+  document.documentElement.classList.toggle("light");
+  localStorage.setItem("theme", document.documentElement.classList.contains("light") ? "light" : "dark");
+  // إعادة تهيئة الرسوم (لتطبيق الألوان)
+  Object.values(state).forEach(p => p.api && p.api.resize());
+};
+
+// قائمة أزواج شائعة (تقدر تزيدها بسهولة)
+const PAIRS = [
+  "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","ADAUSDT","DOGEUSDT","AVAXUSDT","TONUSDT","LINKUSDT",
+  "TRXUSDT","MATICUSDT","DOTUSDT","SUIUSDT","OPUSDT","ARBUSDT","NEARUSDT"
+];
+function renderPairs(list=PAIRS){
+  picker.innerHTML = "";
+  list.forEach(sym=>{
+    const opt = document.createElement("option");
+    opt.value = sym; opt.textContent = sym;
+    picker.appendChild(opt);
+  });
+}
+renderPairs();
+
+search.addEventListener("input", ()=>{
+  const q = search.value.trim().toUpperCase();
+  renderPairs(PAIRS.filter(p => p.includes(q)));
+});
+
+applyPairsBtn.onclick = ()=>{
+  [...picker.selectedOptions].map(o=>o.value).forEach(addPairBoard);
+  picker.selectedIndex = -1;
+  window.scrollTo({top:document.body.scrollHeight,behavior:"smooth"});
+};
+
+const state = {}; // لكل زوج: بيانات و WebSocket و واجهة
+
+/** ========================
+ * أدوات حساب المؤشرات
+ =========================*/
+// RSI
+function calcRSI(closes, period=14){
+  if (closes.length < period+1) return Array(closes.length).fill(null);
+  let gains=0, losses=0;
+  for(let i=1;i<=period;i++){
+    const ch = closes[i]-closes[i-1];
+    gains += Math.max(0,ch);
+    losses += Math.max(0,-ch);
+  }
+  let rs = gains/(losses||1e-9);
+  const rsi = Array(period).fill(null);
+  rsi.push(100 - (100/(1+rs)));
+  for(let i=period+1;i<closes.length;i++){
+    const ch = closes[i]-closes[i-1];
+    gains = (gains*(period-1) + Math.max(0,ch))/period;
+    losses = (losses*(period-1) + Math.max(0,-ch))/period;
+    rs = gains/(losses||1e-9);
+    rsi.push(100 - (100/(1+rs)));
+  }
+  return rsi;
+}
+// SuperTrend (ATR مبسّط)
+function ema(arr, p){
+  const k = 2/(p+1); const out=[arr[0]];
+  for(let i=1;i<arr.length;i++) out.push(out[i-1]+k*(arr[i]-out[i-1]));
+  return out;
+}
+function atr(high,low,close, p=10){
+  const tr=[high[0]-low[0]];
+  for(let i=1;i<close.length;i++){
+    tr.push(Math.max(high[i]-low[i], Math.abs(high[i]-close[i-1]), Math.abs(low[i]-close[i-1])));
+  }
+  return ema(tr,p);
+}
+function superTrend(high,low,close, factor=3, period=10){
+  const atrv = atr(high,low,close,period);
+  const mid = high.map((h,i)=>(h+low[i])/2);
+  const upper = mid.map((m,i)=>m + factor*atrv[i]);
+  const lower = mid.map((m,i)=>m - factor*atrv[i]);
+  const st = Array(close.length).fill(null);
+  let trendUp=true, prev=mid[period]||close[0];
+  for(let i=period;i<close.length;i++){
+    const c=close[i];
+    if (c>prev) trendUp=true;
+    else if (c<prev) trendUp=false;
+    prev = c;
+    st[i] = trendUp ? lower[i] : upper[i];
+  }
+  return st;
+}
+// محاور Pivot (R1/S1 الكلاسيكي)
+function pivots(o,h,l,c){
+  const P=(h+l+c)/3;
+  const R1=2*P-l, S1=2*P-h;
+  return {P,R1,S1};
+}
+
+function fearGreedFromRSI(rsi){
+  const v = Math.max(0,Math.min(100,Math.round(rsi)));
+  let label = "محايد";
+  if (v>=70) label="طمع قوي";
+  else if (v>=55) label="طمع";
+  else if (v<=30) label="خوف قوي";
+  else if (v<=45) label="خوف";
+  return {value:v,label};
+}
+
+/** ========================
+ * إنشاء لوحة لكل زوج
+ =========================*/
+function addPairBoard(symbol){
+  if (state[symbol]) return; // موجودة
+  const id = symbol.toLowerCase();
+  const panel = document.createElement("article");
+  panel.className="panel";
+  panel.innerHTML = `
+    <div class="panel-head">
+      <div class="pair">
+        <span style="font-weight:700">${symbol}</span>
+        <span class="fav" title="إضافة إلى المفضلة">☆</span>
+      </div>
+      <div class="status">
+        <span class="chip" id="price-${id}">—</span>
+        <span class="chip up" id="chg-${id}">—</span>
+        <span class="badge" id="sig-${id}">إشارة: —</span>
+        <div class="greed" title="الخوف/الطمع">
+          <div class="needle" id="needle-${id}" style="transform:translate(-50%) rotate(-90deg)"></div>
+          <small id="glabel-${id}" class="muted">خوف/طمع</small>
+        </div>
+      </div>
+    </div>
+    <div class="wrap">
+      <div id="chart-${id}" class="chart"></div>
+      <div id="rsi-${id}" class="subchart"></div>
+      <table class="tbl">
+        <thead><tr>
+          <th>الدعم S1</th><th>المحور P</th><th>المقاومة R1</th>
+          <th>قوّة الإشارة</th><th>اتجاه</th><th>تحديث آخر</th>
+        </tr></thead>
+        <tbody>
+          <tr>
+            <td id="s1-${id}">—</td><td id="piv-${id}">—</td><td id="r1-${id}">—</td>
+            <td id="score-${id}">—</td><td id="trend-${id}">—</td><td id="ts-${id}">—</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  `;
+  boards.appendChild(panel);
+
+  const api = initCharts(symbol, id);
+  state[symbol] = {panel, api};
+}
+
+function fmt(n){ return Number(n).toLocaleString('en-US',{maximumFractionDigits:2}); }
+
+/** ========================
+ * تهيئة الرسوم + جلب البيانات
+ =========================*/
+function initCharts(symbol, id){
+  const mainEl = document.getElementById(chart-${id});
+  const rsiEl  = document.getElementById(rsi-${id});
+
+  const dark = !document.documentElement.classList.contains("light");
+  const common = {
+    layout:{background:{type:'solid',color:'transparent'},textColor:getComputedStyle(document.documentElement).getPropertyValue('--text').trim()},
+    grid:{vertLines:{color:getComputedStyle(document.documentElement).getPropertyValue('--grid').trim()},horzLines:{color:getComputedStyle(document.documentElement).getPropertyValue('--grid').trim()}},
+    rightPriceScale:{borderVisible:false}, timeScale:{borderVisible:false}
+  };
+
+  const c1 = LightweightCharts.createChart(mainEl,{height:360, ...common});
+  const candle = c1.addCandlestickSeries({
+    upColor:getComputedStyle(document.documentElement).getPropertyValue('--up').trim(),
+    downColor:getComputedStyle(document.documentElement).getPropertyValue('--down').trim(),
+    borderVisible:false, wickUpColor:'rgba(34,197,94,0.9)', wickDownColor:'rgba(239,68,68,0.9)'
+  });
+  const stLine = c1.addLineSeries({color:getComputedStyle(document.documentElement).getPropertyValue('--accent').trim(), lineWidth:2});
+  const r1Line = c1.addLineSeries({color:'#eab308', lineWidth:1, priceLineVisible:false});
+  const s1Line = c1.addLineSeries({color:'#14b8a6', lineWidth:1, priceLineVisible:false});
+
+  const c2 = LightweightCharts.createChart(rsiEl,{height:120, ...common});
+  const rsiLine = c2.addLineSeries({color:'#a78bfa', lineWidth:2});
+  const rsi70 = c2.addHorizontalLine(70,{color:'#ef4444', lineWidth:1, lineStyle:LightweightCharts.LineStyle.Dotted});
+  const rsi30 = c2.addHorizontalLine(30,{color:'#22c55e', lineWidth:1, lineStyle:LightweightCharts.LineStyle.Dotted});
+
+  // جلب تاريخ 1m
+  const REST = https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1m&limit=500;
+  fetch(REST).then(r=>r.json()).then(rows=>{
+    const data = rows.map(r=>({
+      time: Math.floor(r[0]/1000),
+      open: +r[1], high:+r[2], low:+r[3], close:+r[4]
+    }));
+    candle.setData(data);
+
+    const hi=data.map(d=>d.high), lo=data.map(d=>d.low), cl=data.map(d=>d.close), op=data.map(d=>d.open);
+    const st = superTrend(hi,lo,cl,3,10);
+    const rsi = calcRSI(cl,14);
+    const last = data[data.length-1];
+    const pv = pivots(op.at(-1), hi.at(-1), lo.at(-1), cl.at(-1));
+    stLine.setData(data.map((d,i)=> st[i] ? {time:d.time, value:st[i]} : {time:d.time, value: null}));
+    r1Line.setData([{time:last.time-3600,value:pv.R1},{time:last.time+3600,value:pv.R1}]);
+    s1Line.setData([{time:last.time-3600,value:pv.S1},{time:last.time+3600,value:pv.S1}]);
+    rsiLine.setData(data.map((d,i)=>({time:d.time, value:rsi[i]??null})));
+
+    updateInfo(symbol,id,last.close,cl.at(-2), pv, rsi.at(-1), st.at(-1), cl.at(-1));
+
+    // WebSocket حيّ
+    const stream = wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@kline_1m;
+    const ws = new WebSocket(stream);
+    ws.onmessage = ev=>{
+      const msg = JSON.parse(ev.data);
+      if (!msg.k) return;
+      const k = msg.k;
+      const t = Math.floor(k.t/1000);
+      const bar = {time:t, open:+k.o, high:+k.h, low:+k.l, close:+k.c};
+      candle.update(bar);
+
+      // تحديث مؤشرات آخر شمعة تقريبًا (حساب خفيف)
+      const c = +k.c, h=+k.h, l=+k.l, o=+k.o;
+      const lastRSI = Number(document.getElementById(score-${id}).dataset.rsi || 50);
+      // لإعادة الحساب الدقيق، يُفضّل إعادة مصفوفات closes.. لكن للتبسيط نحدّث المعلومات اللحظية:
+      const pv2 = pivots(o,h,l,c);
+      r1Line.setData([{time:t-3600,value:pv2.R1},{time:t+3600,value:pv2.R1}]);
+      s1Line.setData([{time:t-3600,value:pv2.S1},{time:t+3600,value:pv2.S1}]);
+
+      // تقدير SuperTrend اللحظي باستعمال قيم اللحظة (تقريب عملي)
+      const estST = (h+l)/2; // تقريب بسيط لعدم تحميل ثقيل
+      stLine.update({time:t, value:estST});
+
+      updateInfo(symbol,id,c, +k.o, pv2, lastRSI, estST, c);
+    };
+    state[symbol].ws = ws;
+  });
+
+  return {
+    resize(){
+      c1.applyOptions({}); c2.applyOptions({});
+    }
+  };
+}
+
+function updateInfo(symbol,id, price, open, pv, rsiVal, stVal, close){
+  const chg = ((price-open)/open)*100;
+  const dir = price >= (stVal||price) ? "صاعد" : "هابط";
+  const score = Math.round(
+    (Math.min(100,Math.max(0,(rsiVal||50))) * 0.5) +           // نصف الوزن RSI
+    (Math.min(20, Math.max(0, Math.abs(chg)))*2.5)              // ربع الوزن حركة %
+  );
+
+  // عرض السعر والتغيير
+  const priceEl = document.getElementById(price-${id});
+  priceEl.textContent = ${fmt(price)} ${symbol.endsWith("USDT")?"$":""};
+  const chgEl = document.getElementById(chg-${id});
+  chgEl.className = "chip " + (chg>=0? "up":"down");
+  chgEl.textContent = (chg>=0?"+":"") + chg.toFixed(2) + "%";
+
+  // الجدول
+  document.getElementById(s1-${id}).textContent = fmt(pv.S1);
+  document.getElementById(piv-${id}).textContent = fmt(pv.P);
+  document.getElementById(r1-${id}).textContent = fmt(pv.R1);
+  const sc=document.getElementById(score-${id}); sc.textContent = score + " / 100"; sc.dataset.rsi = rsiVal??50;
+  document.getElementById(trend-${id}).textContent = dir;
+  document.getElementById(ts-${id}).textContent = new Date().toLocaleTimeString();
+
+  // خوف/طمع من RSI
+  const fg = fearGreedFromRSI(rsiVal||50);
+  const needle = document.getElementById(needle-${id});
+  const label = document.getElementById(glabel-${id});
+  // تحويل 0..100 إلى زاوية -90..+90
+  const deg = (fg.value/100)*180 - 90;
+  needle.style.transform = translate(-50%) rotate(${deg}deg);
+  label.textContent = fg.label;
+
+  // إشارة بيع/شراء حسب تقاطع السعر مع ST
+  const sigEl = document.getElementById(sig-${id});
+  if (price > (stVal||price-1)) { sigEl.textContent = "إشارة: شراء ↑"; sigEl.style.color="var(--up)"; }
+  else                           { sigEl.textContent = "إشارة: بيع ↓";  sigEl.style.color="var(--down)"; }
+}
+
+/** ========================
+ * مفضلة بسيطة بالمتصفح
+ =========================*/
+document.addEventListener("click",(e)=>{
+  if (!e.target.classList.contains("fav")) return;
+  e.target.classList.toggle("active");
+  const sym = e.target.closest(".panel").querySelector(".pair span").textContent;
+  const favs = new Set(JSON.parse(localStorage.getItem("favs")||"[]"));
+  if (e.target.classList.contains("active")) favs.add(sym); else favs.delete(sym);
+  localStorage.setItem("favs", JSON.stringify([...favs]));
+});
+
+// أزواج مفضّلة تُضاف تلقائيًا إن وُجدت
+(JSON.parse(localStorage.getItem("favs")||"[]")).forEach(addPairBoard);
+// وإلا نضيف BTC/ETH تلقائيًا للبداية
+if (boards.children.length===0){ ["BTCUSDT","ETHUSDT"].forEach(addPairBoard); }
+</script>
+</body>
+</html>
